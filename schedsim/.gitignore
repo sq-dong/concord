@@ -1,0 +1,11 @@
+*.swp
+.DS_Store
+*.dat
+# Schedsim binary
+schedsim 
+# Results
+logs/
+*.csv
+*.text
+*.txt
+*.temp
