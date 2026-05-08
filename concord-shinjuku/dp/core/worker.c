@@ -31,6 +31,7 @@
 #include <ucontext.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sched.h>
 #include <stdio.h>
@@ -241,14 +242,20 @@ void concord_func()
  * @msw: the top 32-bits of the pointer containing the data
  * @lsw: the bottom 32 bits of the pointer containing the data
  */
-static void generic_work(uint32_t msw, uint32_t lsw, uint32_t msw_id,
-                         uint32_t lsw_id)
+ static void generic_work(uint32_t msw, uint32_t lsw, uint32_t msw_id,
+                          uint32_t lsw_id,
+                          uint32_t recv_ts_msw, uint32_t recv_ts_lsw,
+                          uint32_t nw_cy_msw, uint32_t nw_cy_lsw,
+                          uint32_t disp_cy_msw, uint32_t disp_cy_lsw)
 {
     asm volatile("sti" ::
                      :);
 
     struct ip_tuple *id = (struct ip_tuple *)((uint64_t)msw_id << 32 | lsw_id);
     void *data = (void *)((uint64_t)msw << 32 | lsw);
+    uint64_t networker_recv_ts = ((uint64_t)recv_ts_msw << 32) | recv_ts_lsw;
+    uint64_t networker_cy = ((uint64_t)nw_cy_msw << 32) | nw_cy_lsw;
+    uint64_t dispatcher_cy = ((uint64_t)disp_cy_msw << 32) | disp_cy_lsw;
     int ret;
 
     struct message * req = (struct message *) data;
@@ -267,36 +274,42 @@ static void generic_work(uint32_t msw, uint32_t lsw, uint32_t msw_id,
     // leveldb_iter_destroy(iter);
     // leveldb_readoptions_destroy(readoptions);
 
-    // uint64_t i = 0;
-    // do
-    // {
-    //     asm volatile("nop");
-    //     i++;
-    // } while (i / 0.233 < req->runNs);
+    uint64_t i = 0;
+    do
+    {
+        asm volatile("nop");
+        i++;
+    } while (i * 0.9 < req->runNs);
 
-    if(req->runNs == 5700){
-        simpleloop(BENCHMARK_DB_GET_SPIN);
-    }
-    else if (req->runNs == 6000) {
-        simpleloop(BENCHMARK_DB_ITERATOR_SPIN);
-    }
-    else if (req->runNs == 20000) {
-        simpleloop(BENCHMARK_DB_PUT_SPIN);
-    }
-    else if (req->runNs == 88000) {
-        simpleloop(BENCHMARK_DB_DELETE_SPIN);
-    }
-     else {
-        simpleloop(BENCHMARK_DB_SEEK_SPIN);
-    }
+    // if(req->runNs == 5700){
+    //     simpleloop(BENCHMARK_DB_GET_SPIN);
+    // }
+    // else if (req->runNs == 6000) {
+    //     simpleloop(BENCHMARK_DB_ITERATOR_SPIN);
+    // }
+    // else if (req->runNs == 20000) {
+    //     simpleloop(BENCHMARK_DB_PUT_SPIN);
+    // }
+    // else if (req->runNs == 88000) {
+    //     simpleloop(BENCHMARK_DB_DELETE_SPIN);
+    // }
+    //  else {
+    //     simpleloop(BENCHMARK_DB_SEEK_SPIN);
+    // }
 
     asm volatile ("cli":::);
 
     struct message resp;
+    memset(&resp, 0, sizeof(resp));
     resp.genNs = req->genNs;
     resp.runNs = req->runNs;
     resp.type = TYPE_RES;
     resp.req_id = req->req_id;
+    resp.networker_recv_ns = networker_recv_ts;
+    unsigned int _dummy;
+    resp.server_send_ns = rdtscp(&_dummy);
+    resp.networker_cy = networker_cy;
+    resp.dispatcher_cy = dispatcher_cy;
 
     struct ip_tuple new_id = {
         .src_ip = id->dst_ip,
@@ -369,11 +382,18 @@ static inline void handle_new_packet(void)
         uint32_t lsw = (uint64_t)data & 0x00000000FFFFFFFF;
         uint32_t msw_id = ((uint64_t)id & 0xFFFFFFFF00000000) >> 32;
         uint32_t lsw_id = (uint64_t)id & 0x00000000FFFFFFFF;
+        uint64_t recv_ts = pkt->timestamp;
+        uint64_t nw_cy = dispatcher_requests[cpu_nr_].requests[active_req].networker_cy;
+        uint64_t disp_cy = dispatcher_requests[cpu_nr_].requests[active_req].dispatcher_cy;
+        uint32_t recv_ts_msw = (uint32_t)(recv_ts >> 32), recv_ts_lsw = (uint32_t)recv_ts;
+        uint32_t nw_cy_msw = (uint32_t)(nw_cy >> 32), nw_cy_lsw = (uint32_t)nw_cy;
+        uint32_t disp_cy_msw = (uint32_t)(disp_cy >> 32), disp_cy_lsw = (uint32_t)disp_cy;
         cont = dispatcher_requests[cpu_nr_].requests[active_req].rnbl;
         getcontext_fast(cont);
         set_context_link(cont, &uctx_main);
-        makecontext(cont, (void (*)(void))generic_work, 4, msw, lsw,
-                    msw_id, lsw_id);
+        makecontext(cont, (void (*)(void))generic_work, 10, msw, lsw,
+                    msw_id, lsw_id, recv_ts_msw, recv_ts_lsw,
+                    nw_cy_msw, nw_cy_lsw, disp_cy_msw, disp_cy_lsw);
         finished = false;
         ret = swapcontext_very_fast(&uctx_main, cont);
         if (ret)
@@ -413,8 +433,8 @@ static void do_db_generic_work(struct db_req *db_pkg, uint64_t start_time)
                     &db_err);
         POST_PROTECTCALL;
 
-        break;
         #endif
+        break;
     }
 
     case (DB_GET):
@@ -450,8 +470,8 @@ static void do_db_generic_work(struct db_req *db_pkg, uint64_t start_time)
             k++;
         }
 
-        break;
         #endif
+        break;
     }
     case (DB_ITERATOR):
     {
@@ -478,8 +498,8 @@ static void do_db_generic_work(struct db_req *db_pkg, uint64_t start_time)
         leveldb_iter_seek(iter,"mykey",5);
         POST_PROTECTCALL;
 
-        break;
         #endif 
+        break;
     }
     default:
         break;

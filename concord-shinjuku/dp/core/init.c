@@ -28,6 +28,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <string.h>
 
 #include <ix/stddef.h>
 #include <ix/log.h>
@@ -63,6 +64,7 @@
 //FIXME Remove these
 #include <sys/types.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <ucontext.h>
 #include <time.h>
 
@@ -458,6 +460,11 @@ int main(int argc, char *argv[])
   
 	log_info("init done\n");
 
+	{
+		const char *db_path = "/tmp/experiments/leveldb";
+		mkdir("/tmp/experiments", 0755);
+		mkdir(db_path, 0755);
+	}
 	options  = leveldb_options_create();
 	roptions = leveldb_readoptions_create();
 	woptions = leveldb_writeoptions_create();
@@ -466,7 +473,11 @@ int main(int argc, char *argv[])
 
 	char *err = NULL;
     db = leveldb_open(options, "/tmpfs/experiments/leveldb", &err);
-	assert(!err);
+	if (err) {
+		log_info("leveldb_open failed: %s\n", err);
+		free(err);
+		panic("could not open LevelDB");
+	}
 
 	char * db_err;
 	int len;

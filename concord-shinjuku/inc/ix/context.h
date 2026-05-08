@@ -36,6 +36,8 @@ struct mempool context_pool __attribute((aligned(64)));
 struct mempool_datastore stack_datastore;
 struct mempool stack_pool __attribute((aligned(64)));
 
+extern size_t context_stack_size;
+
 extern int getcontext_fast(ucontext_t *ucp);
 
 /**

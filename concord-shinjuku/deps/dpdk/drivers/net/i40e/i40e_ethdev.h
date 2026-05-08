@@ -168,7 +168,7 @@ enum i40e_flxpld_layer_idx {
 
 /* Default queue interrupt throttling time in microseconds */
 #define I40E_ITR_INDEX_DEFAULT          0
-#define I40E_QUEUE_ITR_INTERVAL_DEFAULT 32 /* 32 us */
+#define I40E_QUEUE_ITR_INTERVAL_DEFAULT 0 /* 32 us */
 #define I40E_QUEUE_ITR_INTERVAL_MAX     8160 /* 8160 us */
 
 struct i40e_adapter;

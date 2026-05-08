@@ -32,7 +32,7 @@
 #include <net/ip.h>
 #include <net/udp.h>
 
-#define MAX_WORKERS   18
+#define MAX_WORKERS   24
 
 #define INACTIVE    0x00
 #define READY       0x01
@@ -87,6 +87,10 @@ struct message {
         uint32_t pkts_length;
         uint64_t runNs;
         uint64_t genNs;
+        uint64_t networker_recv_ns;
+        uint64_t server_send_ns;
+        uint64_t networker_cy;
+        uint64_t dispatcher_cy;
 } __attribute__((__packed__));
 
 struct request
@@ -135,7 +139,9 @@ struct dispatcher_request
         uint8_t type;
         uint8_t category;
         uint64_t timestamp;
-        char make_it_64_bytes[30];
+        uint64_t dispatcher_cy;
+        uint64_t networker_cy;
+        char make_it_64_bytes[14];
 } __attribute__((packed, aligned(64)));
 
 struct jbsq_dispatcher_request {

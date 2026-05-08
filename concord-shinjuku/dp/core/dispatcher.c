@@ -34,6 +34,8 @@
 #include <ix/transmit.h>
 
 #include <ix/networker.h>
+#include <ix/mbuf.h>
+#include <asm/cpu.h>
 #include <net/ip.h>
 #include <net/udp.h>
 
@@ -71,7 +73,7 @@ extern void dune_apic_send_posted_ipi(uint8_t vector, uint32_t dest_core);
 uint16_t num_workers = 0;
 volatile int * cpu_preempt_points [MAX_WORKERS] = {NULL};
 uint64_t epoch_slack;
-uint64_t time_slice = PREEMPTION_DELAY*CPU_FREQ_GHZ;
+uint64_t time_slice = ((uint64_t)PREEMPTION_DELAY * 279998ULL + 50000ULL) / 100000ULL;
 uint64_t dispatcher_work_thresh;
 
 #define DISPATCHER_STATS_ITERATOR_LIMIT 1
@@ -241,6 +243,14 @@ static inline void dispatch_requests(uint64_t cur_time)
 		dispatcher_requests[idle].requests[active_req].type = type;
 		dispatcher_requests[idle].requests[active_req].category = category;
 		dispatcher_requests[idle].requests[active_req].timestamp = timestamp;
+        if (category == PACKET && req->mbufs[0]) {
+			struct mbuf *pkt = (struct mbuf *)req->mbufs[0];
+			dispatcher_requests[idle].requests[active_req].networker_cy = pkt->networker_cy;
+			dispatcher_requests[idle].requests[active_req].dispatcher_cy = cur_time - timestamp;
+		} else {
+			dispatcher_requests[idle].requests[active_req].networker_cy = 0;
+			dispatcher_requests[idle].requests[active_req].dispatcher_cy = 0;
+		}
 		dispatcher_requests[idle].requests[active_req].flag = READY;
 		jbsq_get_next(&(dispatch_states[idle].next_push));
 		dispatch_states[idle].occupancy++;
@@ -337,6 +347,7 @@ static inline void handle_networker(uint64_t cur_time)
                                 continue;
                         }
                         type = networker_pointers.types[i];
+                        uint64_t pkt_ts = ((struct mbuf *)networker_pointers.reqs[i]->mbufs[0])->timestamp;
                         tskq_enqueue_tail(&tskq, cont,
                                           networker_pointers.reqs[i],
                                           type, PACKET, cur_time);
@@ -360,7 +371,7 @@ static inline void handle_networker(uint64_t cur_time)
  * @lsw: the bottom 32 bits of the pointer containing the data
  */
 static void dispatcher_generic_work(uint32_t msw, uint32_t lsw, uint32_t msw_id,
-                         uint32_t lsw_id)
+                         uint32_t lsw_id, uint32_t msw_ts, uint32_t lsw_ts)
 {
     asm volatile("sti" ::
                      :);
@@ -368,6 +379,7 @@ static void dispatcher_generic_work(uint32_t msw, uint32_t lsw, uint32_t msw_id,
     struct ip_tuple *id = (struct ip_tuple *)((uint64_t)msw_id << 32 | lsw_id);
     void *data = (void *)((uint64_t)msw << 32 | lsw);
     int ret;
+    uint64_t networker_recv_cycles = ((uint64_t)msw_ts << 32) | lsw_ts;
 
     struct message * req = (struct message *) data;
 
@@ -390,7 +402,7 @@ static void dispatcher_generic_work(uint32_t msw, uint32_t lsw, uint32_t msw_id,
     {
         asm volatile("nop");
         i++;
-    } while (i / 0.233 < req->runNs);
+    } while (i * 0.9 < req->runNs);
 
          
     asm volatile ("cli":::);
@@ -400,6 +412,11 @@ static void dispatcher_generic_work(uint32_t msw, uint32_t lsw, uint32_t msw_id,
     resp.runNs = req->runNs;
     resp.type = TYPE_RES;
     resp.req_id = req->req_id;
+    resp.networker_recv_ns = networker_recv_cycles;
+    unsigned int _dummy;
+    resp.server_send_ns = rdtscp(&_dummy);
+    resp.networker_cy = dispatcher_job.networker_cy;
+    resp.dispatcher_cy = dispatcher_job.dispatcher_cy;
 
     struct ip_tuple new_id = {
         .src_ip = id->dst_ip,
@@ -417,7 +434,7 @@ static void dispatcher_generic_work(uint32_t msw, uint32_t lsw, uint32_t msw_id,
 }
 
 static inline void dispatcher_parse_packet(struct mbuf *pkt, void **data_ptr,
-                                struct ip_tuple **id_ptr)
+                                struct ip_tuple **id_ptr, uint64_t *recv_cycles)
 {
     // Quickly parse packet without doing checks
     struct eth_hdr *ethhdr = mbuf_mtod(pkt, struct eth_hdr *);
@@ -441,6 +458,7 @@ static inline void dispatcher_parse_packet(struct mbuf *pkt, void **data_ptr,
     (*id_ptr)->dst_ip = ntoh32(iphdr->dst_addr.addr);
     (*id_ptr)->src_port = ntoh16(udphdr->src_port);
     (*id_ptr)->dst_port = ntoh16(udphdr->dst_port);
+    *recv_cycles = pkt->timestamp;
     pkt->done = (void *)0xDEADBEEF;
 }
 
@@ -541,8 +559,11 @@ static inline void dispatcher_handle_new_packet(void)
     int ret;
     void *data;
     struct ip_tuple *id;
-    struct mbuf *pkt = (struct mbuf *)dispatcher_job.req;
-    dispatcher_parse_packet(pkt, &data, &id);
+    uint64_t recv_cycles;
+    struct request *req = (struct request *)dispatcher_job.req;
+    struct mbuf *pkt = req->mbufs[0];
+    dispatcher_job.networker_cy = pkt->networker_cy;
+    dispatcher_parse_packet(pkt, &data, &id, &recv_cycles);
 
     if (data)
     {
@@ -550,12 +571,14 @@ static inline void dispatcher_handle_new_packet(void)
         uint32_t lsw = (uint64_t)data & 0x00000000FFFFFFFF;
         uint32_t msw_id = ((uint64_t)id & 0xFFFFFFFF00000000) >> 32;
         uint32_t lsw_id = (uint64_t)id & 0x00000000FFFFFFFF;
+        uint32_t msw_ts = (recv_cycles >> 32) & 0xFFFFFFFFu;
+        uint32_t lsw_ts = recv_cycles & 0xFFFFFFFFu;
 
         dispatcher_cont = (struct mbuf *) dispatcher_job.rnbl;
         getcontext_fast(dispatcher_cont);
         set_context_link(dispatcher_cont, &dispatcher_uctx_main);
         makecontext(dispatcher_cont, (void (*)(void))dispatcher_generic_work, 4, msw, lsw,
-                    msw_id, lsw_id);
+                    msw_id, lsw_id, msw_ts, lsw_ts);
         ret = swapcontext_very_fast(&dispatcher_uctx_main, dispatcher_cont);
         if (ret)
         {
@@ -660,7 +683,7 @@ static inline void dispatcher_handle_fake_request(uint64_t cur_time)
 	dispatcher_finish_request();
 }
 
-static inline void dispatcher_handle_request(void)
+static inline void dispatcher_handle_request(uint64_t cur_time)
 {
 
    if(dispatcher_job_status != ONGOING) {
@@ -675,6 +698,7 @@ static inline void dispatcher_handle_request(void)
       dispatcher_job.type = type;
       dispatcher_job.category = category;
       dispatcher_job.timestamp = timestamp;
+      dispatcher_job.dispatcher_cy = cur_time - timestamp;
       dispatcher_job_status = ONGOING;
    }
 
@@ -700,7 +724,7 @@ void dispatcher_do_work(uint64_t cur_time){
 
         eth_process_reclaim();
         eth_process_send();
-        dispatcher_handle_request();
+        dispatcher_handle_request(cur_time);
 #endif
 }
 

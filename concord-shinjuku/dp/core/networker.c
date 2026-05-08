@@ -37,6 +37,7 @@
 #include <ix/transmit.h>
 
 #include <asm/chksum.h>
+#include <asm/cpu.h>
 
 #include <net/ip.h>
 #include <net/udp.h>
@@ -70,6 +71,7 @@ void do_networking(void)
 	rqueue.head = NULL;
 	while (1)
 	{
+		uint64_t _t1 = rdtsc();
 		eth_process_poll();
 		num_recv = eth_process_recv();
 		if (num_recv == 0)
@@ -84,8 +86,10 @@ void do_networking(void)
 			mempool_free(&request_mempool, req);
 		}
 		networker_pointers.free_cnt = 0;
+		uint64_t networker_cy = rdtsc() - _t1;
 		j = 0;
         for (i = 0; i < num_recv; i++) {
+			recv_mbufs[i]->networker_cy = networker_cy;
 			struct request * req = rq_update(&rqueue, recv_mbufs[i]);
 			if (req) {
 				networker_pointers.reqs[j] = req;

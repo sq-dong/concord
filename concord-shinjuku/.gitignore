@@ -7,7 +7,6 @@
 *.la
 *.so*
 *.csv
-*.txt
 
 
 .depend
@@ -21,4 +20,7 @@ db/bench-db/*
 
 .vscode
 
+/deps/dpdk/build/
+/deps/dune/kern/.cache.mk
+/deps/dune/kern/*.o.ur-*
 

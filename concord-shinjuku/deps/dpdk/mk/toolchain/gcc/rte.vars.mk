@@ -99,5 +99,8 @@ ifeq ($(shell test $(GCC_VERSION) -lt 47 && echo 1), 1)
 WERROR_FLAGS += -Wno-uninitialized
 endif
 
+WERROR_FLAGS += -Wno-uninitialized
+WERROR_FLAGS += -Wno-format-truncation -Wno-implicit-fallthrough
+
 export CC AS AR LD OBJCOPY OBJDUMP STRIP READELF
 export TOOLCHAIN_CFLAGS TOOLCHAIN_LDFLAGS TOOLCHAIN_ASFLAGS

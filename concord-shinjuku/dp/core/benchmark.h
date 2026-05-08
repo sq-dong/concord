@@ -28,7 +28,7 @@
 #define METHOD_CONCORD  3
 
 // Debug Methods
-#define LATENCY_DEBUG   1
+#define LATENCY_DEBUG   0
 
 // Dispatcher do work
 #ifndef DISPATCHER_DO_WORK
